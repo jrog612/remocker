@@ -4,7 +4,6 @@ version = "0.0.1"
 description = "Advanced mocker adapter of requests"
 authors = ["Jrog <jrog612@gmail.com>"]
 license = "MIT"
-url = "https://github.com/jrog612/remocker"
 repository = "https://github.com/jrog612/remocker"
 readme = 'README.md'
 packages = [{include = "remocker.py"}]

@@ -1,7 +1,7 @@
 [tool.poetry]
 name = "remocker"
-version = "0.0.1"
-description = "Advanced mocker adapter of requests"
+version = "0.0.2"
+description = "For mocking remote server"
 authors = ["Jrog <jrog612@gmail.com>"]
 license = "MIT"
 repository = "https://github.com/jrog612/remocker"

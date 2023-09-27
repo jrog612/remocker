@@ -46,7 +46,8 @@ import requests
 
 with mocker_app.mocking():
     requests.get('https://api.test.com/products', params={'foo': 'var'})
-    requests.post('https://api.test.com/products', data={'foo': 'var'})
+    # Remocker only allow json request. Not form data
+    requests.post('https://api.test.com/products', json={'foo': 'var'})
     requests.get('https://api.test.com/products/1')
 
 

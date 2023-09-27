@@ -1,6 +1,7 @@
-import inspect
-import json
+import json as _json
 import re
+from contextlib import contextmanager
+from functools import cached_property
 
 import httpretty
 
@@ -18,52 +19,18 @@ def join_path(str1, str2):
             return str1 + '/' + str2
 
 
-class RemockerClient:
-    base_url = None
-
-    GET = httpretty.GET
-    PUT = httpretty.PUT
-    POST = httpretty.POST
-    DELETE = httpretty.DELETE
-    HEAD = httpretty.HEAD
-    PATCH = httpretty.PATCH
-    OPTIONS = httpretty.OPTIONS
-
-    request_log = []
-    storages = {}
-
-    def get_storage(self, key, default=None):
-        return self.storages.get(key, default)
-
-    def set_storage(self, key, value):
-        self.storages[key] = value
-
-    @staticmethod
-    def dumps(body):
-        return json.dumps(body)
-
-    @staticmethod
-    def loads(body):
-        return json.loads(body)
-
-    def register_uri(self, method, uri, body, regex=False, *args, **kwargs):
-        if not callable(body):
-            body = self.dumps(body)
-
-        if type(uri) is str:
-            uri = self.get_full_uri(uri)
-
-        if regex:
-            uri = re.compile(uri)
-
-        return httpretty.register_uri(method, uri, body, *args, **kwargs)
-
-    def get_base_url(self):
-        return self.base_url
+class Remocker:
+    def __init__(self, base_url, ):
+        self.storages = []
+        self.mockers = []
+        if callable(base_url):
+            self.base_url = base_url()
+        else:
+            self.base_url = base_url
 
     def get_full_uri(self, uri):
         if not uri.startswith('http'):
-            return join_path(self.get_base_url(), uri)
+            return join_path(self.base_url, uri)
         return uri
 
     def get_uri_params(self, uri, pattern):
@@ -71,67 +38,131 @@ class RemockerClient:
             pattern = re.compile(pattern)
         return re.search(pattern, uri)
 
-    def get_mocking_methods(self):
-        results = []
-        for key, value in inspect.getmembers(self):
-            if not callable(value):
-                continue
-            if key.startswith('mock_'):
-                results.append(value)
+    def _append_mocker(self, method, uri, body, regex=False, **kwargs):
+        if not callable(body):
+            body = _json.dumps(body)
 
-        return results
+        if type(uri) is str:
+            uri = self.get_full_uri(uri)
 
-    @classmethod
-    def clear(cls):
-        cls.request_log = []
-        cls.storages = {}
+        if regex:
+            uri = re.compile(uri)
 
-    @classmethod
-    def mocking(cls):
-        instance = cls()
-        for mocker in instance.get_mocking_methods():
-            mocker()
-        cls.clear()
-        return instance
+        self.mockers.append({
+            'method': method.upper(),
+            'uri': uri,
+            'body': body,
+            'regex': regex,
+            **kwargs,
+        })
+
+    def mock(self, method, path, regex=False, **kwargs):
+        def decorator(func):
+            def inner(request, uri, response_headers):
+                remocker_request = RemockerRequest(
+                    request,
+                    uri,
+                    method,
+                    response_headers,
+                    uri_pattern=path if regex else None,
+                )
+                response = func(remocker_request)
+                self.storages.append(
+                    RemockerLog(request=remocker_request, response=response)
+                )
+                if response.headers is None:
+                    response.headers = response_headers
+                return response.to_tuple()
+
+            self._append_mocker(method, path, inner, regex=regex, **kwargs)
+            return inner
+
+        return decorator
+
+    def apply_mockers(self):
+        for m in self.mockers:
+            httpretty.register_uri(**m)
+        return True
+
+    @contextmanager
+    def mocking(self, allow_net_connect=False, verbose=False):
+        with mocking(self, allow_net_connect=allow_net_connect, verbose=verbose) as app:
+            yield app
 
 
-def mocker_callback(instance):
-    def decorator(func):
-        def inner(request, uri, response_headers):
-            instance.request_log.append(uri)
-            results = func(request, uri, response_headers)
-
-            if not results:
-                return 200, response_headers, '{}'
-            if type(results) is not tuple:
-                return 200, response_headers, results
-            result_len = len(results)
-
-            if result_len == 1:
-                return 200, response_headers, results[0]
-            elif result_len == 2:
-                return results[0], response_headers, results[1]
-            elif result_len == 3:
-                return results
-
-        return inner
-
-    return decorator
+@contextmanager
+def mocking(mocker_app: Remocker, allow_net_connect=False, verbose=False):
+    httpretty.reset()
+    httpretty.enable(allow_net_connect=allow_net_connect, verbose=verbose)
+    mocker_app.apply_mockers()
+    yield mocker_app
+    httpretty.disable()
+    httpretty.reset()
 
 
-class mocking:
-    def __init__(self, mocker, allow_net_connect=False, verbose=False):
-        self.mocker_class = mocker
-        self.mocker = mocker()
-        self.allow_net_connect = allow_net_connect
-        self.verbose = verbose
+class RemockerResponse:
+    def __init__(
+            self,
+            body,
+            status_code=200,
+            headers=None
+    ):
+        self.body = body
+        self.status_code = status_code or 200
+        self.headers = headers
 
-    def __enter__(self):
-        httpretty.reset()
-        httpretty.enable(allow_net_connect=self.allow_net_connect, verbose=self.verbose)
-        self.mocker.mocking()
-        return self.mocker
+    @property
+    def string_body(self):
+        if type(self.body) is str:
+            return self.body
+        return _json.dumps(self.body)
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        httpretty.disable()
-        httpretty.reset()
+    def to_tuple(self):
+        return self.status_code, self.headers, self.string_body
+
+
+class RemockerRequest:
+    def __init__(
+            self,
+            request,
+            uri,
+            method,
+            response_headers,
+            uri_pattern=None,
+    ):
+        self.origin_request = request
+        self.uri = uri
+        self.method = method
+        self.response_headers = response_headers
+        self.uri_pattern = uri_pattern
+
+    @cached_property
+    def url_params(self):
+        if self.uri_pattern is not None:
+            matched = re.search(self.uri_pattern, self.uri)
+            return matched.groupdict()
+        else:
+            return {}
+
+    @cached_property
+    def data(self):
+        return _json.loads(self.origin_request.body)
+
+    @cached_property
+    def query_params(self):
+        result = {}
+        for key, value in self.origin_request.querystring.items():
+            if not value:
+                result[key] = None
+
+            if type(value) is list and len(value) == 1:
+                result[key] = value[0]
+            else:
+                result[key] = value
+        return result
+
+
+class RemockerLog:
+    def __init__(self, request, response):
+        self.request = request
+        self.response = response

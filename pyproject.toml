@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "remocker"
-version = "0.0.2"
+version = "0.1.0"
 description = "mocking http request more easy"
 authors = ["Jrog <jrog612@gmail.com>"]
 license = "MIT"

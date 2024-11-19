@@ -131,6 +131,7 @@ class RemockerRequest:
             uri_pattern=None,
     ):
         self.origin_request = request
+        self.headers = request.headers
         self.uri = uri
         self.method = method
         self.response_headers = response_headers
